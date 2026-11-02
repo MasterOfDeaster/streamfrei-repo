@@ -44,6 +44,7 @@ ai_path = os.path.join(app_dst, 'appinfo.json')
 ai = json.load(open(ai_path))
 ai['id'] = NEW
 ai['title'] = 'Nuvio TV DV'
+ai['version'] = os.environ.get('DV_VERSION', ai['version'])
 ai['services'] = [s for s in services if s.endswith('.service') and 'plugin' not in s] or ai.get('services', [])
 json.dump(ai, open(ai_path, 'w'), indent=2)
 
@@ -67,14 +68,36 @@ window.__nuvioDvHint=function(c){
  var p=c.streamPresentation||(c.raw&&c.raw.streamPresentation)||{};
  var bh=c.behaviorHints||{},rb=(c.raw&&c.raw.behaviorHints)||{};
  var t=[c.title,c.label,c.name,c.description,bh.filename,rb.filename,c.raw&&c.raw.filename,p.encode].concat(Array.isArray(p.visualTags)?p.visualTags:[]).filter(Boolean).join(" ").toLowerCase();
- if(!t)return null;
+ var S=window.__nuvioDvState={text:t,reason:"",hint:null,sent:false,fallback:false};
+ if(!t){S.reason="kein Stream-Name gefunden";return null;}
  var dv=t.indexOf("dolby vision")>=0||t.indexOf("dolbyvision")>=0||tok(t,"dv")||tok(t,"dovi");
- if(!dv)return null;
+ if(!dv){S.reason="kein DV im Namen";return null;}
  var hdr=tok(t,"hdr")||tok(t,"hdr10")||t.indexOf("hdr10+")>=0||tok(t,"p8");
  var p7=tok(t,"p7")||tok(t,"fel")||tok(t,"mel")||t.indexOf("profile 7")>=0;
- if(hdr||p7)return null;
- return{profileId:5,trackType:"single"};
+ if(hdr){S.reason="DV mit HDR im Namen (Profil 8?) - nicht angefasst";return null;}
+ if(p7){S.reason="Profil 7 im Namen - nicht angefasst";return null;}
+ S.reason="DV Profil 5 erkannt";S.hint={profileId:5,trackType:"single"};
+ return S.hint;
 };
+var box=null;
+function esc(x){return String(x).replace(/[&<>]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;"}[c];});}
+function upd(){
+ var S=window.__nuvioDvState,v=null,vs=document.querySelectorAll("video");
+ for(var i=0;i<vs.length;i++){if(vs[i].currentSrc||vs[i].getAttribute("src")||vs[i].querySelector("source")){v=vs[i];break;}}
+ if(!v||!S){if(box)box.style.display="none";return;}
+ if(!box){box=document.createElement("div");box.style.cssText="position:fixed;top:16px;left:16px;z-index:2147483647;max-width:900px;padding:12px 16px;background:rgba(0,0,0,.8);color:#fff;font:20px/1.45 monospace;border:2px solid #f5c400;border-radius:8px;pointer-events:none;white-space:pre-wrap";document.body.appendChild(box);}
+ var src=v.querySelector("source"),cur=String(v.currentSrc||v.getAttribute("src")||"");
+ var way=src&&String(src.type).indexOf("mediaOption=")>=0?"direkt + DV-Angabe (mediaOption)":cur.indexOf("blob:")===0?"Zwischenplayer (MSE/HLS/DASH) - DV-Angabe nicht moeglich":"direkt, ohne DV-Angabe";
+ box.style.display="block";
+ box.innerHTML=esc("Nuvio DV Diagnose\n"+
+  "Stream: "+S.text.slice(0,110)+"\n"+
+  "Erkennung: "+S.reason+"\n"+
+  "DV-Angabe gesendet: "+(S.sent?"JA":"nein")+"\n"+
+  "Rueckfall auf normal: "+(S.fallback?"JA (TV hat abgelehnt)":"nein")+"\n"+
+  "Abspielweg: "+way+"\n"+
+  "Video: "+(v.videoWidth||"?")+"x"+(v.videoHeight||"?")+"  Zeit: "+(v.currentTime||0).toFixed(1)+"s");
+}
+setInterval(upd,1000);
 window.__nuvioDvType=function(h){
  return"video/mp4;mediaOption="+encodeURIComponent(JSON.stringify({option:{externalStreamingInfo:{contents:{DolbyHdrInfo:{encryptionType:"clear",profileId:Number(h&&h.profileId)||5,trackType:h&&h.trackType==="dual"?"dual":"single"}}}}}));
 };
@@ -107,12 +130,12 @@ patch('applyWebOsStagedNativeSource(e,t="native-file"){',
       'applyWebOsDolbyVisionSource(u,h){if(!this.video)return!1;this.video.removeAttribute("src");'
       'Array.from(this.video.querySelectorAll("source")).forEach(n=>n.remove());'
       'var s=document.createElement("source");s.src=u;s.type=window.__nuvioDvType(h);this.video.appendChild(s);'
-      'this.playbackEngine="native-file-dv";console.info("[Nuvio DV] Dolby Vision hint sent",h);return!0},'
+      'this.playbackEngine="native-file-dv";window.__nuvioDvState&&(window.__nuvioDvState.sent=!0);console.info("[Nuvio DV] Dolby Vision hint sent",h);return!0},'
       'isDolbyVisionSourceDisabled(u){return!!(this.dolbyVisionFailedUrls&&this.dolbyVisionFailedUrls.has(String(u||"")))},'
       'watchDolbyVisionSourceFailure(k,u,o){var v=this.video;if(!v)return;var s=v.querySelector("source"),done=!1,self=this;'
       'function clean(){done=!0;v.removeEventListener("error",fail,!0);s&&s.removeEventListener("error",fail);v.removeEventListener("playing",clean)}'
       'function fail(){if(done)return;clean();if(!self.isPlaybackRequestActive(k,u))return;'
-      'self.dolbyVisionFailedUrls=self.dolbyVisionFailedUrls||new Set;self.dolbyVisionFailedUrls.add(String(u||""));'
+      'self.dolbyVisionFailedUrls=self.dolbyVisionFailedUrls||new Set;self.dolbyVisionFailedUrls.add(String(u||""));window.__nuvioDvState&&(window.__nuvioDvState.fallback=!0);'
       'console.warn("[Nuvio DV] webOS rejected the Dolby Vision hint, retrying normal playback");'
       'self.play(u,Object.assign({},o,{dolbyVisionHint:null,preserveTrackSelections:!0}))}'
       'v.addEventListener("error",fail,!0);s&&s.addEventListener("error",fail);v.addEventListener("playing",clean)},'
