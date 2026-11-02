@@ -141,6 +141,94 @@ patch('applyWebOsStagedNativeSource(e,t="native-file"){',
       'v.addEventListener("error",fail,!0);s&&s.addEventListener("error",fail);v.addEventListener("playing",clean)},'
       'applyWebOsStagedNativeSource(e,t="native-file"){')
 
+
+# 5) Kodi hand-off: Dolby Vision profile 5 streams are played by Kodi, whose
+#    webOS player applies Dolby Vision correctly. Kodi is controlled through its
+#    JSON-RPC web interface (password protected) via Nuvio's background service.
+KODI_APP = r"""(function(){
+var SVC="luna://space.nuvio.webosdv.service/",KEY="nuvioDvKodi",bridges=[];
+function luna(uri,params,cb){try{var br=new PalmServiceBridge();bridges.push(br);
+ br.onservicecallback=function(m){var r;try{r=JSON.parse(m)}catch(x){r={returnValue:false,errorText:String(m)}}
+  var i=bridges.indexOf(br);if(i>=0)bridges.splice(i,1);cb&&cb(r)};
+ br.call(uri,JSON.stringify(params||{}));}catch(x){cb&&cb({returnValue:false,errorText:"Luna nicht verfuegbar: "+x.message})}}
+function load(){try{return JSON.parse(localStorage.getItem(KEY)||"null")}catch(x){return null}}
+function save(v){try{v?localStorage.setItem(KEY,JSON.stringify(v)):localStorage.removeItem(KEY)}catch(x){}}
+function esc(x){return String(x==null?"":x).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]})}
+var box=null;
+function close(){if(box){box.remove();box=null}}
+function show(html){close();box=document.createElement("div");
+ box.style.cssText="position:fixed;inset:0;z-index:2147483646;background:rgba(10,10,12,.94);color:#fff;display:flex;align-items:center;justify-content:center;font:28px/1.5 sans-serif";
+ box.innerHTML='<div style="max-width:1100px;padding:40px 56px;border:2px solid #7c3aed;border-radius:16px;background:#141418">'+html+'</div>';
+ document.body.appendChild(box);return box}
+var BTN="display:inline-block;margin:24px 20px 0 0;padding:16px 32px;border-radius:12px;border:3px solid transparent;background:#2a2a30;color:#fff;font:inherit;cursor:pointer";
+var INP="display:block;width:640px;margin:8px 0 18px;padding:14px 18px;font:inherit;background:#222;color:#fff;border:3px solid #555;border-radius:10px";
+function askCredentials(cb,note){
+ var c=load()||{user:"kodi",pass:"",port:8080};
+ var b=show('<div style="font-size:36px;font-weight:bold">Kodi-Zugang fuer Dolby Vision</div>'+
+  '<div style="color:#bbb;margin:12px 0 24px">'+esc(note||"Dieser Stream ist Dolby Vision Profil 5. Er wird in Kodi abgespielt, damit die Farben stimmen. Gib einmalig die Zugangsdaten aus Kodi ein (Einstellungen > Dienste > Steuerung).")+'</div>'+
+  'Benutzername<input id="nkU" style="'+INP+'" value="'+esc(c.user)+'">Passwort<input id="nkP" type="password" style="'+INP+'" value="'+esc(c.pass)+'">Port<input id="nkO" style="'+INP+'" value="'+esc(c.port)+'">'+
+  '<button id="nkS" style="'+BTN+';background:#7c3aed">Speichern &amp; in Kodi abspielen</button><button id="nkH" style="'+BTN+'">Doch in Nuvio abspielen</button>');
+ function ok(){var v={user:b.querySelector("#nkU").value.trim()||"kodi",pass:b.querySelector("#nkP").value,port:Number(b.querySelector("#nkO").value)||8080};save(v);cb(v)}
+ b.querySelector("#nkS").onclick=ok;
+ b.querySelector("#nkH").onclick=function(){cb(null)};
+ b.querySelectorAll("input").forEach(function(i){i.addEventListener("keydown",function(ev){ev.stopPropagation();if(ev.keyCode===13){ev.preventDefault();ok()}},true)});
+ b.querySelector(c.pass?"#nkS":"#nkP").focus();
+}
+window.__nuvioKodiHandoff=function(url,ctx,playHere){
+ return new Promise(function(done){
+  function here(){close();done(playHere())}
+  function waiting(text){var b=show('<div style="font-size:36px;font-weight:bold">'+esc(text)+'</div><div style="color:#bbb;margin-top:12px">Dolby Vision Profil 5 wird in Kodi mit korrekten Farben abgespielt. Danach mit der App-Liste zurueck zu Nuvio wechseln.</div><button id="nkH" style="'+BTN+'">Doch in Nuvio abspielen</button>');b.querySelector("#nkH").onclick=here;b.querySelector("#nkH").focus()}
+  function fail(text,auth){var b=show('<div style="font-size:36px;font-weight:bold;color:#ff8a8a">Kodi-Uebergabe fehlgeschlagen</div><div style="margin-top:12px">'+esc(text)+'</div><button id="nkR" style="'+BTN+';background:#7c3aed">'+(auth?"Zugangsdaten aendern":"Nochmal versuchen")+'</button><button id="nkH" style="'+BTN+'">In Nuvio abspielen</button>');
+   b.querySelector("#nkR").onclick=function(){auth?askCredentials(function(c){c?go(c):here()},"Kodi hat die Zugangsdaten abgelehnt. Bitte pruefen."):go(load())};b.querySelector("#nkH").onclick=here;b.querySelector("#nkR").focus()}
+  function go(c){
+   waiting("Wird in Kodi geoeffnet ...");
+   luna("luna://com.webos.applicationManager/launch",{id:"org.xbmc.kodi"},function(){
+    luna(SVC+"kodiPlay",{url:url,headers:(ctx&&ctx.requestHeaders)||{},user:c.user,pass:c.pass,port:c.port},function(r){
+     if(r&&r.returnValue){waiting("Laeuft in Kodi");setTimeout(close,8000);done();return}
+     fail((r&&r.errorText)||"Unbekannter Fehler",r&&r.errorCode==="KODI_AUTH")});});
+  }
+  var c=load();
+  if(c&&c.pass)go(c);else askCredentials(function(v){v?go(v):here()});
+ });
+};
+})();
+"""
+b = KODI_APP + b
+patch('Promise.resolve(e.play(o,p))',
+      'Promise.resolve(p&&p.dolbyVisionHint&&window.__nuvioKodiHandoff?'
+      'window.__nuvioKodiHandoff(o,p,function(){return e.play(o,Object.assign({},p,{dolbyVisionHint:null}))}):e.play(o,p))')
+
+svc_path = os.path.join(stage, NEW + '.service', 'src', 'index.js')
+svc = open(svc_path, encoding='utf-8').read()
+SVC_ANCHOR = 'service.register("audioTranscodeStop",function(e){audioTranscode.stop((e.payload||{}).id),e.respond({returnValue:!0})});'
+assert svc.count(SVC_ANCHOR) == 1, 'Dienst-Ankerstelle nicht eindeutig'
+KODI_SVC = r"""service.register("kodiPlay",function(e){
+var p=e.payload||{},http=require("http"),port=Number(p.port)||8080,deadline=Date.now()+30000;
+var auth="Basic "+Buffer.from(String(p.user||"kodi")+":"+String(p.pass||"")).toString("base64");
+var file=String(p.url||""),h=p.headers&&typeof p.headers==="object"?p.headers:{},hk=Object.keys(h).filter(function(k){return h[k]!=null&&String(h[k])!==""&&k.toLowerCase()!=="range"});
+if(hk.length)file+="|"+hk.map(function(k){return k+"="+encodeURIComponent(String(h[k]))}).join("&");
+function rpc(body,cb){var d=JSON.stringify(body),done=false;function fin(a,b,c){if(!done){done=true;cb(a,b,c)}}
+ var req=http.request({host:"127.0.0.1",port:port,path:"/jsonrpc",method:"POST",headers:{"Content-Type":"application/json","Content-Length":Buffer.byteLength(d),"Authorization":auth}},function(res){var t="";res.on("data",function(x){t+=x});res.on("end",function(){fin(null,res.statusCode,t)})});
+ req.setTimeout(4000,function(){req.abort();fin(new Error("timeout"))});req.on("error",function(err){fin(err)});req.end(d)}
+function attempt(){rpc({jsonrpc:"2.0",id:1,method:"JSONRPC.Ping"},function(err,status){
+ if(err){if(Date.now()<deadline)return setTimeout(attempt,1000);return e.respond({returnValue:false,errorCode:"KODI_UNREACHABLE",errorText:"Kodi antwortet nicht auf Port "+port+". Ist in Kodi unter Einstellungen > Dienste > Steuerung 'Steuerung ueber HTTP erlauben' eingeschaltet?"})}
+ if(status===401)return e.respond({returnValue:false,errorCode:"KODI_AUTH",errorText:"Kodi hat Benutzername oder Passwort abgelehnt."});
+ rpc({jsonrpc:"2.0",id:2,method:"Player.Open",params:{item:{file:file}}},function(err2,st2,txt){
+  if(err2)return e.respond({returnValue:false,errorCode:"KODI_PLAY",errorText:"Fehler beim Starten in Kodi: "+err2.message});
+  var r={};try{r=JSON.parse(txt)}catch(x){}
+  if(r&&r.error)return e.respond({returnValue:false,errorCode:"KODI_PLAY",errorText:"Kodi meldet: "+(r.error.message||JSON.stringify(r.error))});
+  e.respond({returnValue:true})})})}
+attempt()});"""
+svc = svc.replace(SVC_ANCHOR, SVC_ANCHOR + KODI_SVC)
+open(svc_path, 'w', encoding='utf-8').write(svc)
+
+sj_path = os.path.join(stage, NEW + '.service', 'services.json')
+sj = json.load(open(sj_path))
+cmds = sj['services'][0].setdefault('commands', [])
+if not any(c.get('name') == 'kodiPlay' for c in cmds):
+    cmds.append({'name': 'kodiPlay', 'description': 'Hand a Dolby Vision stream to Kodi via JSON-RPC', 'public': True})
+json.dump(sj, open(sj_path, 'w'), indent=2)
+
 open(bundle_path, 'w', encoding='utf-8').write(b)
 
 with open(os.path.join(app_dst, 'NUVIO-DV-NOTICE.txt'), 'w') as f:
