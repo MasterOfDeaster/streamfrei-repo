@@ -154,7 +154,13 @@ function luna(uri,params,cb){try{var br=new PalmServiceBridge();bridges.push(br)
 function load(){try{return JSON.parse(localStorage.getItem(KEY)||"null")}catch(x){return null}}
 function save(v){try{v?localStorage.setItem(KEY,JSON.stringify(v)):localStorage.removeItem(KEY)}catch(x){}}
 function esc(x){return String(x==null?"":x).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]})}
-var box=null;
+var box=null,pendingCheck=false;
+document.addEventListener("visibilitychange",function(){
+ if(document.hidden||!pendingCheck)return;
+ luna(SVC+"kodiStatus",{},function(r){
+  if(r&&r.state==="error"){pendingCheck=false;show('<div style="font-size:36px;font-weight:bold;color:#ff8a8a">Kodi-Uebergabe fehlgeschlagen</div><div style="margin-top:12px">'+esc(r.errorText||"")+'</div><button id="nkX" style="'+BTN+'">OK</button>');var x=box.querySelector("#nkX");x.onclick=close;x.focus()}
+  else if(r&&r.state==="ok"){pendingCheck=false;close()}});
+});
 function close(){if(box){box.remove();box=null}}
 function show(html){close();box=document.createElement("div");
  box.style.cssText="position:fixed;inset:0;z-index:2147483646;background:rgba(10,10,12,.94);color:#fff;display:flex;align-items:center;justify-content:center;font:28px/1.5 sans-serif";
@@ -182,10 +188,14 @@ window.__nuvioKodiHandoff=function(url,ctx,playHere){
    b.querySelector("#nkR").onclick=function(){auth?askCredentials(function(c){c?go(c):here()},"Kodi hat die Zugangsdaten abgelehnt. Bitte pruefen."):go(load())};b.querySelector("#nkH").onclick=here;b.querySelector("#nkR").focus()}
   function go(c){
    waiting("Wird in Kodi geoeffnet ...");
-   luna("luna://com.webos.applicationManager/launch",{id:"org.xbmc.kodi"},function(){
-    luna(SVC+"kodiPlay",{url:url,headers:(ctx&&ctx.requestHeaders)||{},user:c.user,pass:c.pass,port:c.port},function(r){
-     if(r&&r.returnValue){waiting("Laeuft in Kodi");setTimeout(close,8000);done();return}
-     fail((r&&r.errorText)||"Unbekannter Fehler",r&&r.errorCode==="KODI_AUTH")});});
+   pendingCheck=true;
+   // The service keeps running while Nuvio is suspended in the background,
+   // so the job must be handed over before Kodi takes the foreground.
+   luna(SVC+"kodiPlay",{url:url,headers:(ctx&&ctx.requestHeaders)||{},user:c.user,pass:c.pass,port:c.port},function(r){
+    pendingCheck=false;
+    if(r&&r.returnValue){waiting("Laeuft in Kodi");setTimeout(close,8000);done();return}
+    fail((r&&r.errorText)||"Unbekannter Fehler",r&&r.errorCode==="KODI_AUTH")});
+   setTimeout(function(){luna("luna://com.webos.applicationManager/launch",{id:"org.xbmc.kodi"})},400);
   }
   var c=load();
   if(c&&c.pass)go(c);else askCredentials(function(v){v?go(v):here()});
@@ -203,7 +213,7 @@ svc = open(svc_path, encoding='utf-8').read()
 SVC_ANCHOR = 'service.register("audioTranscodeStop",function(e){audioTranscode.stop((e.payload||{}).id),e.respond({returnValue:!0})});'
 assert svc.count(SVC_ANCHOR) == 1, 'Dienst-Ankerstelle nicht eindeutig'
 KODI_SVC = r"""service.register("kodiPlay",function(e){
-var p=e.payload||{},http=require("http"),port=Number(p.port)||8080,deadline=Date.now()+30000;
+var p=e.payload||{},http=require("http"),port=Number(p.port)||8080,deadline=Date.now()+60000;global.__nuvioKodiLast={state:"waiting",at:Date.now()};function reply(r){global.__nuvioKodiLast=Object.assign({state:r.returnValue?"ok":"error",at:Date.now()},r);e.respond(r)}function note(msg,cb){rpc({jsonrpc:"2.0",id:9,method:"GUI.ShowNotification",params:{title:"Nuvio DV",message:msg,displaytime:8000}},function(){cb&&cb()})}
 var auth="Basic "+Buffer.from(String(p.user||"kodi")+":"+String(p.pass||"")).toString("base64");
 var file=String(p.url||""),h=p.headers&&typeof p.headers==="object"?p.headers:{},hk=Object.keys(h).filter(function(k){return h[k]!=null&&String(h[k])!==""&&k.toLowerCase()!=="range"});
 if(hk.length)file+="|"+hk.map(function(k){return k+"="+encodeURIComponent(String(h[k]))}).join("&");
@@ -211,14 +221,14 @@ function rpc(body,cb){var d=JSON.stringify(body),done=false;function fin(a,b,c){
  var req=http.request({host:"127.0.0.1",port:port,path:"/jsonrpc",method:"POST",headers:{"Content-Type":"application/json","Content-Length":Buffer.byteLength(d),"Authorization":auth}},function(res){var t="";res.on("data",function(x){t+=x});res.on("end",function(){fin(null,res.statusCode,t)})});
  req.setTimeout(4000,function(){req.abort();fin(new Error("timeout"))});req.on("error",function(err){fin(err)});req.end(d)}
 function attempt(){rpc({jsonrpc:"2.0",id:1,method:"JSONRPC.Ping"},function(err,status){
- if(err){if(Date.now()<deadline)return setTimeout(attempt,1000);return e.respond({returnValue:false,errorCode:"KODI_UNREACHABLE",errorText:"Kodi antwortet nicht auf Port "+port+". Ist in Kodi unter Einstellungen > Dienste > Steuerung 'Steuerung ueber HTTP erlauben' eingeschaltet?"})}
- if(status===401)return e.respond({returnValue:false,errorCode:"KODI_AUTH",errorText:"Kodi hat Benutzername oder Passwort abgelehnt."});
+ if(err){if(Date.now()<deadline)return setTimeout(attempt,1000);return reply({returnValue:false,errorCode:"KODI_UNREACHABLE",errorText:"Kodi antwortet nicht auf Port "+port+". Ist in Kodi unter Einstellungen > Dienste > Steuerung 'Steuerung ueber HTTP erlauben' eingeschaltet?"})}
+ if(status===401)return reply({returnValue:false,errorCode:"KODI_AUTH",errorText:"Kodi hat Benutzername oder Passwort abgelehnt."});
  rpc({jsonrpc:"2.0",id:2,method:"Player.Open",params:{item:{file:file}}},function(err2,st2,txt){
-  if(err2)return e.respond({returnValue:false,errorCode:"KODI_PLAY",errorText:"Fehler beim Starten in Kodi: "+err2.message});
+  if(err2){var m1="Fehler beim Starten in Kodi: "+err2.message;return note(m1,function(){reply({returnValue:false,errorCode:"KODI_PLAY",errorText:m1})})}
   var r={};try{r=JSON.parse(txt)}catch(x){}
-  if(r&&r.error)return e.respond({returnValue:false,errorCode:"KODI_PLAY",errorText:"Kodi meldet: "+(r.error.message||JSON.stringify(r.error))});
-  e.respond({returnValue:true})})})}
-attempt()});"""
+  if(r&&r.error){var m2="Kodi meldet: "+(r.error.message||JSON.stringify(r.error));return note(m2,function(){reply({returnValue:false,errorCode:"KODI_PLAY",errorText:m2})})}
+  note("Dolby-Vision-Stream von Nuvio wird geladen ...");reply({returnValue:true})})})}
+attempt()});service.register("kodiStatus",function(e){e.respond(Object.assign({returnValue:true},global.__nuvioKodiLast||{state:"none"}))});"""
 svc = svc.replace(SVC_ANCHOR, SVC_ANCHOR + KODI_SVC)
 open(svc_path, 'w', encoding='utf-8').write(svc)
 
@@ -227,6 +237,8 @@ sj = json.load(open(sj_path))
 cmds = sj['services'][0].setdefault('commands', [])
 if not any(c.get('name') == 'kodiPlay' for c in cmds):
     cmds.append({'name': 'kodiPlay', 'description': 'Hand a Dolby Vision stream to Kodi via JSON-RPC', 'public': True})
+if not any(c.get('name') == 'kodiStatus' for c in cmds):
+    cmds.append({'name': 'kodiStatus', 'description': 'Result of the last Kodi hand-off', 'public': True})
 json.dump(sj, open(sj_path, 'w'), indent=2)
 
 open(bundle_path, 'w', encoding='utf-8').write(b)
