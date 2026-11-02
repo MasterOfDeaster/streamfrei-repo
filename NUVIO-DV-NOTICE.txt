@@ -1,0 +1,1 @@
+Nuvio TV DV: modified build of Nuvio TV 1.3.6 (GPL-3.0, https://github.com/NuvioMedia/NuvioTVSmart) with an experimental Dolby Vision hand-off for the webOS media pipeline. Changes: see nuvio-dolby-vision.patch.
